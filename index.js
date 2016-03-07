@@ -6,10 +6,11 @@ var through = require('through2'),
   ShopifyApi = require('shopify-api'),
   PluginError = gutil.PluginError,
   shopify = {},
-  shopifyAPI,
-  PLUGIN_NAME = 'gulp-shopify-upload';
+  shopifyAPI;
 
-// Set up shopify API information
+var PLUGIN_NAME = 'gulp-shopify-upload';
+
+// Set up Shopify API information
 shopify._api = false;
 shopify._basePath = false;
 
@@ -116,9 +117,11 @@ shopify._setOptions = function (options) {
  *      - General assets => 'assets/'
  *      - Language files => 'locales/'
  *
- * Some requests may fail if those folders are ignored
- * @param {string} filepath
- * @param {Function} done
+ * @param {filepath} string - filepath
+ * @param {file} string - file name
+ * @param {host} string- Shopify URL
+ * @param {base} sting - options.basePath
+ * @param {themeid} string - Shopify theme
  */
 shopify.upload = function (filepath, file, host, base, themeid) {
 
@@ -135,6 +138,8 @@ shopify.upload = function (filepath, file, host, base, themeid) {
 
   contents = file.contents;
 
+  gutil.log(gutil.colors.blue('Uploading: ' + filepath));
+
   if (isBinary) {
     props.asset.attachment = contents.toString('base64');
   } else {
@@ -143,12 +148,12 @@ shopify.upload = function (filepath, file, host, base, themeid) {
 
   function onUpdate(err, resp) {
     if (err && err.type === 'ShopifyInvalidRequestError') {
-      gutil.log(gutil.colors.red('Error invalid upload request! ' + filepath + ' not uploaded to ' + host));
+      gutil.log(gutil.colors.red('Error uploading file ' + filepath ));
     } else if (!err) {
       var filename = filepath.replace(/^.*[\\\/]/, '');
       gutil.log(gutil.colors.green('Upload Complete: ' + filename));
     } else {
-      gutil.log(gutil.colors.red('Error undefined! ' + err.type));
+      gutil.log(gutil.colors.red('Error undefined! ' + err.type + ' ' + err.detail ));
     }
   }
 
@@ -156,6 +161,44 @@ shopify.upload = function (filepath, file, host, base, themeid) {
     api.asset.update(themeId, props, onUpdate);
   } else {
     api.assetLegacy.update(props, onUpdate);
+  }
+};
+
+
+/*
+ * Remove a given file path from Shopify.
+ *
+ * File should be the relative path on the local filesystem.
+ *
+ * @param {filepath} string - filepath
+ * @param {file} string - file name
+ * @param {host} string- Shopify URL
+ * @param {base} sting - options.basePath
+ * @param {themeid} string - Shopify theme
+ */
+shopify.destroy = function (filepath, file, host, base, themeid) {
+
+  var api = shopifyAPI,
+    themeId = themeid,
+    key = shopify._makeAssetKey(filepath, base);
+
+  gutil.log(gutil.colors.blue('Removing file: ' + filepath));
+
+  function onDestroy(err, resp) {
+    if (err && err.type === 'ShopifyInvalidRequestError') {
+      gutil.log(gutil.colors.red('Error removing file: ' + filepath ));
+    } else if (!err) {
+      var filename = filepath.replace(/^.*[\\\/]/, '');
+      gutil.log(gutil.colors.green('File removed: ' + filename));
+    } else {
+      gutil.log(gutil.colors.red('Error undefined! ' + err.type));
+    }
+  }
+
+  if (themeId) {
+    api.asset.destroy(themeId, key, onDestroy);
+  } else {
+    api.assetLegacy.destroy(key, onDestroy);
   }
 };
 
@@ -173,18 +216,18 @@ shopify.upload = function (filepath, file, host, base, themeid) {
  * @param {themeid} string - unique id upload to the Shopify theme
  * @param {options} object - named array of custom overrides.
  */
-function gulpShopifyUpload(apiKey, password, host, themeid, options) {
+function gulpShopifyUpload(apiKey, password, host, themeId, options) {
 
-  // queue files provided in the stream for deployment
-  var apiBurstBucketSize = 40,
-    uploadedFileCount = 0,
+  // Queue files provided in the stream for deployment
+  // Note / TODO: Shopify's exact limit of 40 causes an occassional errors in this stream.
+  // setting the bucket size to 36 plays it safe.
+  var apiBurstBucketSize = 36,
+    fileCount = 0,
     stream;
 
   // Set up the API
   shopify._setOptions(options);
   shopifyAPI = shopify._getApi(apiKey, password, host);
-
-  gutil.log('Ready to upload to ' + gutil.colors.magenta(host));
 
   if (typeof apiKey === 'undefined') {
     throw new PluginError(PLUGIN_NAME, 'Error, API Key for shopify does not exist!');
@@ -196,7 +239,37 @@ function gulpShopifyUpload(apiKey, password, host, themeid, options) {
     throw new PluginError(PLUGIN_NAME, 'Error, host for shopify does not exist!');
   }
 
-  // creating a stream through which each file will pass
+  // List available themes if options.listThemes is true
+  if (options.listThemes) {
+    shopifyAPI.theme.list(function(err, obj) {
+      if (err || !obj.themes ) {
+        gutil.log(gutil.colors.red( err ));
+        return;
+      } else {
+        // We have multiple themes, lets list them for easy reference to the themeId
+        // without having to look in the admin
+        obj.themes.forEach(function(theme) {
+          var t = theme.id + ' - ' + theme.name;
+          if (theme.role.length > 0) {
+            t += ' (' + theme.role + ')';
+          }
+          gutil.log( 'Available theme: ' + gutil.colors.magenta( t ));
+          if ( theme.id == themeId ){
+            gutil.log( gutil.colors.green('Connected to ') + gutil.colors.magenta(host) + gutil.colors.green(' theme: ') + gutil.colors.magenta( t ));
+          }
+        });
+      }
+    });
+  } else {
+    // If the listThemes option isnt set or is false, still show theme ID if we can
+    if (themeId) {
+      gutil.log('Connected to ' + gutil.colors.magenta(host) + ' theme: ' + gutil.colors.magenta(themeId));
+    } else {
+      gutil.log('Connected to ' + gutil.colors.magenta(host));
+    }
+  }
+
+  // Create a stream through which each file will pass
   stream = through.obj(function (file, enc, cb) {
     if (file.isStream()) {
       this.emit('error', new PluginError(PLUGIN_NAME, 'Streams are not supported!'));
@@ -204,27 +277,41 @@ function gulpShopifyUpload(apiKey, password, host, themeid, options) {
     }
 
     if (file.isBuffer()) {
-      // deploy immediately if within the burst bucket size, otherwise queue
-      if (uploadedFileCount <= apiBurstBucketSize) {
-        shopify.upload(file.path, file, host, '', themeid);
+      // Upload immediately if within the burst bucket size, otherwise queue
+      if (fileCount <= apiBurstBucketSize) {
+        shopify.upload(file.path, file, host, '', themeId);
       } else {
-        // Delay deployment based on position in the array to deploy 2 files per second
+        // Delay upload based on position in the array to deploy 2 files per second
         // after hitting the initial burst bucket limit size
-        setTimeout(shopify.upload.bind(null, file.path, file, host, '', themeid), ((uploadedFileCount - apiBurstBucketSize) / 2) * 1000);
+        setTimeout(shopify.upload.bind(null, file.path, file, host, '', themeId), ((fileCount - apiBurstBucketSize) / 2) * 1000);
       }
-      uploadedFileCount++;
+      fileCount++;
     }
 
-    // make sure the file goes through the next gulp plugin
+    // If file is removed locally, destroy it on Shopify
+    if (file.isNull()) {
+      // Remove immediately if within the burst bucket size, otherwise queue
+      if (fileCount <= apiBurstBucketSize) {
+        shopify.destroy(file.path, file, host, '', themeId);
+      } else {
+        // Delay removal based on position in the array to deploy 2 files per second
+        // after hitting the initial burst bucket limit size
+        setTimeout(shopify.destroy.bind(null, file.path, file, host, '', themeId), ((fileCount - apiBurstBucketSize) / 2) * 1000);
+      }
+      fileCount++;
+    }
+
+    // Make sure the file goes through the next gulp plugin
     this.push(file);
 
-    // tell the stream engine that we are done with this file
+    // Tell the stream engine that we are done with this file
     cb();
   });
 
-  // returning the file stream
+  // Returning the file stream
   return stream;
 }
 
-// exporting the plugin main function
+
+// Exporting the plugin main function
 module.exports = gulpShopifyUpload;
