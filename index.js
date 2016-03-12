@@ -123,7 +123,7 @@ shopify._setOptions = function (options) {
  * @param {base} sting - options.basePath
  * @param {themeid} string - Shopify theme
  */
-shopify.upload = function (filepath, file, host, base, themeid) {
+shopify.upload = function (filepath, file, host, base, themeid, cb ) {
 
   var api = shopifyAPI,
     themeId = themeid,
@@ -155,6 +155,7 @@ shopify.upload = function (filepath, file, host, base, themeid) {
     } else {
       gutil.log(gutil.colors.red('Error undefined! ' + err.type + ' ' + err.detail ));
     }
+    cb();
   }
 
   if (themeId) {
@@ -176,7 +177,7 @@ shopify.upload = function (filepath, file, host, base, themeid) {
  * @param {base} sting - options.basePath
  * @param {themeid} string - Shopify theme
  */
-shopify.destroy = function (filepath, file, host, base, themeid) {
+shopify.destroy = function (filepath, file, host, base, themeid, cb) {
 
   var api = shopifyAPI,
     themeId = themeid,
@@ -222,8 +223,8 @@ function gulpShopifyUpload(apiKey, password, host, themeId, options) {
   // Note / TODO: Shopify's exact limit of 40 causes an occassional errors in this stream.
   // setting the bucket size to 36 plays it safe.
   var apiBurstBucketSize = 36,
-    fileCount = 0,
-    stream;
+      fileCount = 0,
+      stream;
 
   // Set up the API
   shopify._setOptions(options);
@@ -276,10 +277,17 @@ function gulpShopifyUpload(apiKey, password, host, themeId, options) {
       return cb();
     }
 
+    var self = this;
+
     if (file.isBuffer()) {
       // Upload immediately if within the burst bucket size, otherwise queue
       if (fileCount <= apiBurstBucketSize) {
-        shopify.upload(file.path, file, host, '', themeId);
+        shopify.upload(file.path, file, host, '', themeId, function(){
+          // make sure the file goes through the next gulp plugin
+          self.push(file);
+          // tell the stream engine that we are done with this file
+          cb();
+        });
       } else {
         // Delay upload based on position in the array to deploy 2 files per second
         // after hitting the initial burst bucket limit size
@@ -292,7 +300,12 @@ function gulpShopifyUpload(apiKey, password, host, themeId, options) {
     if (file.isNull()) {
       // Remove immediately if within the burst bucket size, otherwise queue
       if (fileCount <= apiBurstBucketSize) {
-        shopify.destroy(file.path, file, host, '', themeId);
+        shopify.destroy(file.path, file, host, '', themeId, function(){
+          // make sure the file goes through the next gulp plugin
+          self.push(file);
+          // tell the stream engine that we are done with this file
+          cb();
+        });
       } else {
         // Delay removal based on position in the array to deploy 2 files per second
         // after hitting the initial burst bucket limit size
@@ -301,11 +314,6 @@ function gulpShopifyUpload(apiKey, password, host, themeId, options) {
       fileCount++;
     }
 
-    // Make sure the file goes through the next gulp plugin
-    this.push(file);
-
-    // Tell the stream engine that we are done with this file
-    cb();
   });
 
   // Returning the file stream
