@@ -1,7 +1,7 @@
 gulp-shopify-upload
 ===================
 # OLD NEWS 
-## Use Themekit
+Use Themekit
 
 
 ## Introduction
